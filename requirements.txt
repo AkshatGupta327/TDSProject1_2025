@@ -15,4 +15,4 @@ python-multipart
 setuptools
 chromadb
 bs4
-psycopg2-binary
+sqlitecloud
