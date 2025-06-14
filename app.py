@@ -656,8 +656,9 @@ async def query_knowledge_base(request: QueryRequest):
 async def health_check():
     try:
         # Try to connect to the database as part of health check
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_sqlitecloud_connection()
         cursor = conn.cursor()
+        
         
         # Check if tables exist and have data
         cursor.execute("SELECT COUNT(*) FROM discourse_chunks")
