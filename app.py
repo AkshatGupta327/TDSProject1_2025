@@ -17,12 +17,15 @@ import uvicorn
 import traceback
 from dotenv import load_dotenv
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+import sqlitecloud
 
-# Constants
-DB_PATH = "knowledge_base.db"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(_name_)
+
+
+
+# Ensure correct path to db on Vercel (read-only file access)
+SQLITECLOUD_URL = os.getenv("SQLITECLOUD_URL")
 SIMILARITY_THRESHOLD = 0.50  # Lowered threshold for better recall
 MAX_RESULTS = 10  # Increased to get more context
 load_dotenv()
@@ -59,54 +62,18 @@ if not API_KEY:
     logger.error("API_KEY environment variable is not set. The application will not function correctly.")
 
 # Create a connection to the SQLite database
+def get_sqlitecloud_connection():
+    return sqlitecloud.connect(SQLITECLOUD_URL)
+    
+# Create a connection to the SQLite database
 def get_db_connection():
-    conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row  # This enables column access by name
-        return conn
-    except sqlite3.Error as e:
+        return get_sqlitecloud_connection()
+    except Exception as e:
         error_msg = f"Database connection error: {str(e)}"
         logger.error(error_msg)
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=error_msg)
-
-# Make sure database exists or create it
-if not os.path.exists(DB_PATH):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    # Create discourse_chunks table
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS discourse_chunks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        post_id INTEGER,
-        topic_id INTEGER,
-        topic_title TEXT,
-        post_number INTEGER,
-        author TEXT,
-        created_at TEXT,
-        likes INTEGER,
-        chunk_index INTEGER,
-        content TEXT,
-        url TEXT,
-        embedding BLOB
-    )
-    ''')
-    
-    # Create markdown_chunks table
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS markdown_chunks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        doc_title TEXT,
-        original_url TEXT,
-        downloaded_at TEXT,
-        chunk_index INTEGER,
-        content TEXT,
-        embedding BLOB
-    )
-    ''')
-    conn.commit()
-    conn.close()
 
 # Vector similarity calculation with improved handling
 def cosine_similarity(vec1, vec2):
@@ -204,27 +171,27 @@ async def find_similar_content(query_embedding, conn):
         
         for chunk in discourse_chunks:
             try:
-                embedding = json.loads(chunk["embedding"])
+                embedding = json.loads(chunk[11])
                 similarity = cosine_similarity(query_embedding, embedding)
                 
-                if similarity >= SIMILARITY_THRESHOLD:
+                if similarity >= threshold:
                     # Ensure URL is properly formatted
-                    url = chunk["url"]
+                    url = chunk[10]
                     if not url.startswith("http"):
                         # Fix missing protocol
                         url = f"https://discourse.onlinedegree.iitm.ac.in/t/{url}"
                     
                     results.append({
                         "source": "discourse",
-                        "id": chunk["id"],
-                        "post_id": chunk["post_id"],
-                        "topic_id": chunk["topic_id"],
-                        "title": chunk["topic_title"],
-                        "url": url,
-                        "content": chunk["content"],
-                        "author": chunk["author"],
-                        "created_at": chunk["created_at"],
-                        "chunk_index": chunk["chunk_index"],
+                        "id": chunk[0],
+                        "post_id": chunk[1],
+                        "topic_id": chunk[2],
+                        "title": chunk[3],
+                        "url": chunk[10],
+                        "content": chunk[9],
+                        "author": chunk[5],
+                        "created_at": chunk[6],
+                        "chunk_index": chunk[8],
                         "similarity": float(similarity)
                     })
                 
@@ -233,7 +200,7 @@ async def find_similar_content(query_embedding, conn):
                     logger.info(f"Processed {processed_count}/{len(discourse_chunks)} discourse chunks")
                     
             except Exception as e:
-                logger.error(f"Error processing discourse chunk {chunk['id']}: {e}")
+                logger.error(f"Error processing discourse chunk {chunk[0]}: {e}")
         
         # Search markdown chunks
         logger.info("Querying markdown chunks")
@@ -249,23 +216,23 @@ async def find_similar_content(query_embedding, conn):
         
         for chunk in markdown_chunks:
             try:
-                embedding = json.loads(chunk["embedding"])
+                embedding = json.loads(chunk[6])
                 similarity = cosine_similarity(query_embedding, embedding)
                 
                 if similarity >= SIMILARITY_THRESHOLD:
                     # Ensure URL is properly formatted
-                    url = chunk["original_url"]
+                    url = chunk[2]
                     if not url or not url.startswith("http"):
                         # Use a default URL if missing
-                        url = f"https://docs.onlinedegree.iitm.ac.in/{chunk['doc_title']}"
+                        url = f"https://docs.onlinedegree.iitm.ac.in/{chunk[1]}"
                     
                     results.append({
                         "source": "markdown",
-                        "id": chunk["id"],
-                        "title": chunk["doc_title"],
-                        "url": url,
-                        "content": chunk["content"],
-                        "chunk_index": chunk["chunk_index"],
+                        "id": chunk[0],
+                        "title": chunk[1],
+                        "url": chunk[2],                 
+                        "content": chunk[5],
+                        "chunk_index": chunk[4],
                         "similarity": float(similarity)
                     })
                 
@@ -274,7 +241,7 @@ async def find_similar_content(query_embedding, conn):
                     logger.info(f"Processed {processed_count}/{len(markdown_chunks)} markdown chunks")
                     
             except Exception as e:
-                logger.error(f"Error processing markdown chunk {chunk['id']}: {e}")
+                logger.error(f"Error processing markdown chunk {chunk[0]}: {e}")
         
         # Sort by similarity (descending)
         results.sort(key=lambda x: x["similarity"], reverse=True)
@@ -339,7 +306,7 @@ async def enrich_with_adjacent_chunks(conn, results):
                     """, (post_id, current_chunk_index - 1))
                     prev_chunk = cursor.fetchone()
                     if prev_chunk:
-                        additional_content = prev_chunk["content"] + " "
+                        additional_content = prev_chunk[0] + " "
                 
                 # Try to get next chunk
                 cursor.execute("""
@@ -348,7 +315,7 @@ async def enrich_with_adjacent_chunks(conn, results):
                 """, (post_id, current_chunk_index + 1))
                 next_chunk = cursor.fetchone()
                 if next_chunk:
-                    additional_content += " " + next_chunk["content"]
+                    additional_content += " " + next_chunk[0]
                 
             elif result["source"] == "markdown":
                 title = result["title"]
@@ -362,7 +329,7 @@ async def enrich_with_adjacent_chunks(conn, results):
                     """, (title, current_chunk_index - 1))
                     prev_chunk = cursor.fetchone()
                     if prev_chunk:
-                        additional_content = prev_chunk["content"] + " "
+                        additional_content = prev_chunk[0] + " "
                 
                 # Try to get next chunk
                 cursor.execute("""
@@ -371,7 +338,7 @@ async def enrich_with_adjacent_chunks(conn, results):
                 """, (title, current_chunk_index + 1))
                 next_chunk = cursor.fetchone()
                 if next_chunk:
-                    additional_content += " " + next_chunk["content"]
+                    additional_content += " " + next_chunk[0]
             
             # Add the enriched content
             if additional_content:
