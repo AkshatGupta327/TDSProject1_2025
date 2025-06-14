@@ -174,7 +174,7 @@ async def find_similar_content(query_embedding, conn):
                 embedding = json.loads(chunk[11])
                 similarity = cosine_similarity(query_embedding, embedding)
                 
-                if similarity >= threshold:
+                if similarity >= SIMILARITY_THRESHOLD:
                     # Ensure URL is properly formatted
                     url = chunk[10]
                     if not url.startswith("http"):
